@@ -3,8 +3,9 @@ import type { Express, Request, Response } from "express";
 import {verifyToken} from "./middleware/verifyToken.js";
 import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
-import {register,login,getUser,refreshToken,forgetPassword,verifyOtp,resetPassword,getAllUsers, logout} from "./controllers/login.controller.js";
+import {register,login,getUser,refreshToken,forgetPassword,verifyOtp,resetPassword,getAllUsers, logout, resendOtp, passwordChange,deleteUser} from "./controllers/login.controller.js";
 import { pool } from "./config/db.js";
+import {authSudoAdmin, authAdmin,authAdminOrSudoadmin} from './middleware/auth.js';
 import bcrypt from "bcryptjs";
 dotenv.config();
 
@@ -28,9 +29,12 @@ app.get("/profile", verifyToken, getUser);
 app.post("/refresh-token", refreshToken);
 app.post("/forget-password",forgetPassword);
 app.post('/verify-otp',verifyOtp);
-app.patch('/reset-password',resetPassword)
-app.post("/logout",logout)
-app.get("/getAllUsers",getAllUsers)
+app.patch('/reset-password',resetPassword);
+app.patch('/resend-otp',resendOtp)
+app.patch("/change-password",passwordChange)
+app.post("/logout",logout);
+app.get("/getAllUsers",verifyToken, authAdminOrSudoadmin ,getAllUsers);
+app.delete("/deleteUser/:id",verifyToken,deleteUser)
 
 
 app.listen(port,()=>{

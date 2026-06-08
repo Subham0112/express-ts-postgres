@@ -19,16 +19,18 @@ const transporter=nodemailer.createTransport({
 
 export const register = async (req:Request, res:Response)=>{
     try {
-        const {name,email,password} =req.body;
+        const {name,email,password,role} =req.body;
         const findUser=await pool.query("SELECT * FROM users WHERE email=$1",[email]);
         if(findUser.rows.length>0){
             return res.status(400).json({ message: "User already exists" });
         }
 
         const hashPassword= await bcrypt.hash(password,10);
-        const result = await pool.query("INSERT INTO users (user_name, email,password) VALUES ($1, $2, $3) RETURNING *", [name, email,hashPassword]);
-        res.status(201).json(result.rows[0],)
-        res.status(201).json({message:"User Registered Successfully"})
+        const result = await pool.query("INSERT INTO users (user_name, email,password,role) VALUES ($1, $2, $3,$4) RETURNING id,user_name,email", [name, email,hashPassword,role]);
+        res.status(201).json(
+            {message:"User Registered Successfully",
+                user:result.rows[0]
+            })
     } catch (err) {
         console.error("Error creating user", err);
         res.status(500).json({ error: "Internal Server Error" });
@@ -47,20 +49,24 @@ export const login = async (req:Request ,res:Response )=>{
         const user = findUser.rows[0];
         const matchPassword= await bcrypt.compare(password,user.password)
         if(!matchPassword){
-            console.log("invalid email or password");
+            return res.status(401).json({
+                error:"Invalid email or password"
+            })
         }
 
         const accessToken=jwt.sign(
             {
                 userId:user.id,
-                name:user.name
+                name:user.name,
+                role:user.role
             },
             String(process.env.ACCESS_SECRET),
-            {expiresIn:"25s"}
+            {expiresIn:"5m"}
         )
         const refreshToken=jwt.sign(
             {
-                userId:user.id
+                userId:user.id,
+                role:user.role
             },
            String(process.env.REFRESH_SECRET),
             {expiresIn:"10m"}
@@ -72,7 +78,7 @@ export const login = async (req:Request ,res:Response )=>{
         res.cookie("refreshtoken",refreshToken)
           res.json({
           message: "Login successful",
-          user: { id: user.id, email: user.email },
+          user: { id: user.id, email: user.email, role:user.role },
            });
     }catch(err){
         console.error("Error Login Users users", err);
@@ -123,7 +129,8 @@ export const refreshToken = async (req:Request,res:Response)=>{
         const newAccessToken=jwt.sign(
             {
                 userId:user.id,
-                name:user.name
+                name:user.name,
+                role:user.role
             },
             String(process.env.ACCESS_SECRET),
             {expiresIn:"25s"}
@@ -149,8 +156,8 @@ export const forgetPassword =async (req:Request,res:Response)=>{
             })
         }
 
-        const otp=Math.floor(100000 + Math.random() * 90000).toString();
-        const expiresAt= new Date(Date.now() + 10 * 60 * 1000);
+        const otp=Math.floor(100000 + Math.random() * 900000).toString();
+        const expiresAt= new Date(Date.now() + 2* 60* 1000);
 
         await pool.query("INSERT INTO otp_table (email, otp, expires_at) VALUES ($1, $2, $3)",[email,otp,expiresAt]);
 
@@ -163,7 +170,7 @@ export const forgetPassword =async (req:Request,res:Response)=>{
                 html: `<p>You requested a password reset. Please use the following OTP to reset your password:</p><h2>${otp}</h2>`
             })
             res.status(200).json({
-                message: "Password reset email sent",
+                message: "Password reset otp sent on email",
             })
         }catch(err){
             console.error("Error sending email", err);
@@ -206,9 +213,12 @@ export const resetPassword=async (req:Request,res:Response)=>{
     try{
         const {newPassword, email}=req.body;
         const hashedNewPassword=await bcrypt.hash(newPassword,15);
-        const changePassword=await pool.query("UPDATE users SET password=$1 WHERE email=$2 RETURNING *",[hashedNewPassword,email])
-        res.status(200).json({message:"Password Updated Successfully"})
-        res.status(200).json(changePassword.rows)
+        const changePassword=await pool.query("UPDATE users SET password=$1 WHERE email=$2 RETURNING id,user_name,email",[hashedNewPassword,email])
+        res.status(200).json({
+            message:"Password Updated Successfully",
+            user:changePassword.rows
+        })
+        
 
     }catch(err){
         res.status(500).json({
@@ -216,6 +226,81 @@ export const resetPassword=async (req:Request,res:Response)=>{
         })
     }
 };
+
+export const resendOtp=async (req:Request,res:Response)=>{
+    try{
+   const {email}=req.body;
+    const checkOtp= await pool.query("SELECT * FROM otp_table WHERE email=$1",[email])
+    if(checkOtp.rows.length===0){
+        return res.status(404).json({
+                message: "Invalid email"
+            })
+    }
+        const otp=Math.floor(100000 + Math.random() * 900000).toString();
+        const expiresAt= new Date(Date.now() + 2* 60 *1000);
+        await pool.query("UPDATE otp_table SET otp=$1, expires_at=$2 WHERE email=$3",[otp,expiresAt,email]);
+         
+           try{
+            const mailInfo= await transporter.sendMail({
+                from: String(process.env.EMAIL_USER),
+                to: email,
+                subject: "OTP resend Request",
+                html: `<p>You requested a password reset. Please use the following OTP to reset your password:</p><h2>${otp}</h2>`
+            })
+            res.status(200).json({
+                message: "otp send successfully",
+            })
+        }catch(err){
+            console.error("Error sending otp", err);
+            return res.status(500).json({
+                message: "Error sending otp"
+            })
+        }
+    }catch(err){
+        res.status(500).json({
+            message:"Internal server error"
+        })
+    }
+ 
+        }
+
+export const passwordChange =async (req:Request,res:Response)=>{
+    try{
+        const {email,password,changePassword}=req.body;
+    const checkUser=await pool.query("SELECT * FROM users WHERE email=$1",[email])
+    if (checkUser.rows.length===0){
+        return res.status(404).json({
+            error:"Invalid Email or password "
+        })
+    }
+    const userData=checkUser.rows[0];
+   const matchPassword= await bcrypt.compare(password,userData.password)
+        if(!matchPassword){
+           return res.status(400).json({
+            error:"Invalid email or password"
+           })
+        }
+    const matchNewPassword=await bcrypt.compare(changePassword,userData.password)
+    if(matchNewPassword){
+        return res.status(400).json({
+            error:"New password and Old password are same "
+        })
+    }
+
+    const hashedNewPassword=await bcrypt.hash(changePassword,15);
+
+    const updatePassword=await pool.query("UPDATE users SET password=$1 WHERE email=$2 RETURNING id,user_name,email",[hashedNewPassword,email]);
+    return res.status(200).json({
+        message:"Password Changed Successfully",
+        user:updatePassword.rows
+    })
+    }catch (err){
+        res.status(500).json({
+            message:"Internal Server Error"
+        })
+    }
+
+}
 
 export const logout= async (req:Request,res:Response)=>{
     res.clearCookie("refreshtoken");
@@ -231,4 +316,51 @@ export const getAllUsers = async(req:Request,res:Response)=>{
         res.status(500).json({error:"Internal Server Error"})
     }
     
+}
+
+export const deleteUser = async(req:Request,res:Response)=>{
+    try{
+        const { id }=req.params;
+        const requestedId=req.user?.userId;
+        const requestedRole=req.user?.role;
+
+        if(requestedRole==="sudoadmin"){
+            await pool.query("DELETE FROM users WHERE id=$1 ",[id])
+            return res.status(200).json({
+                message:"User deleted successfully"
+            })
+        }
+        if(requestedRole==="admin"){
+            const targetedUsers= await pool.query("SELECT * FROM users WHERE id=$1",[id]);
+            if(targetedUsers.rows.length===0){
+                return res.status(404).json({
+                    error:"Invalid user id "
+                })
+            }
+            if(targetedUsers.rows[0].role!=="user"){
+                return res.status(403).json({
+                    error:"Admin can delete only regular users"
+                })
+            }
+            await pool.query("DELETE FROM users WHERE id=$1",[id]);
+            return res.status(200).json({
+                message:"User deleted Successfully"
+            })
+        }
+
+        if(String(requestedId)!==String(id)){
+            return res.status(403).json({
+                error:"Users can delete their own account"
+            })
+        }
+        await pool.query("DELETE FROM users WHERE id=$1",[id]);
+        return res.status(200).json({
+            message:"Successfully deleted users."
+        })
+
+    }catch(err){
+        return res.status(500).json({
+            error:"Internal Server Error"
+        })
+    }
 }

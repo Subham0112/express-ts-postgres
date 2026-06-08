@@ -1,11 +1,9 @@
 import jwt from "jsonwebtoken";
 import type { Request, Response, NextFunction } from "express";
 
-interface AuthRequest extends Request {
-  user?: any;
-}
 
-export const verifyToken = (req: AuthRequest,res: Response,next: NextFunction) => {
+
+export const verifyToken = (req: Request,res: Response,next: NextFunction) => {
   const token = req.cookies.accesstoken;
 
   if (!token) {
@@ -16,16 +14,16 @@ export const verifyToken = (req: AuthRequest,res: Response,next: NextFunction) =
 
   try {
     const decoded = jwt.verify(
-      token,
-      String(process.env.ACCESS_SECRET)
-    );
+  token,
+  String(process.env.ACCESS_SECRET)
+) as { userId: string; role: string; email:string};
 
-    req.user = decoded;
-
+   req.user=decoded;
+   
     next();
   } catch (err) {
     return res.status(401).json({
-      message: "Invalid or expired token",
+      message: "Invalid or expired token please login",
     });
   }
 };
