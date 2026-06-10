@@ -4,6 +4,7 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
+import e from "express";
 
 
 const transporter=nodemailer.createTransport({
@@ -57,8 +58,10 @@ export const login = async (req:Request ,res:Response )=>{
         const accessToken=jwt.sign(
             {
                 userId:user.id,
-                name:user.name,
-                role:user.role
+                user_name:user.user_name,
+                email:user.email,
+                role:user.role,
+                token_version:user.token_version
             },
             String(process.env.ACCESS_SECRET),
             {expiresIn:"5m"}
@@ -66,19 +69,28 @@ export const login = async (req:Request ,res:Response )=>{
         const refreshToken=jwt.sign(
             {
                 userId:user.id,
-                role:user.role
+                role:user.role,
+                token_version:user.token_version
             },
            String(process.env.REFRESH_SECRET),
-            {expiresIn:"10m"}
+            {expiresIn:"1h"}
         )
      
         await pool.query("UPDATE users SET refresh_token=$1 WHERE id=$2",[refreshToken,user.id]);
 
-        res.cookie("accesstoken",accessToken)
-        res.cookie("refreshtoken",refreshToken)
+        res.cookie("accesstoken",accessToken,{
+            httpOnly:true,
+            sameSite:"lax",
+            secure:false,
+        })
+        res.cookie("refreshtoken",refreshToken,{
+            httpOnly:true,
+            sameSite:"lax",
+            secure:false,
+        })
           res.json({
           message: "Login successful",
-          user: { id: user.id, email: user.email, role:user.role },
+          user: { id: user.id, email: user.email, role:user.role,user_name:user.user_name },
            });
     }catch(err){
         console.error("Error Login Users users", err);
@@ -90,9 +102,9 @@ export const login = async (req:Request ,res:Response )=>{
 export const getUser = async (req:Request,res:Response)=>{
     try{
         const userId=req.user?.userId;
-        const result= await pool.query("SELECT id,user_name,email FROM users WHERE id=$1",[userId]);
+        const result= await pool.query("SELECT id,user_name,email,role FROM users WHERE id=$1",[userId]);
 
-        res.json({
+        res.status(200).json({
             message: "User fetched successfully",
             user: result.rows[0]
         });
@@ -130,12 +142,18 @@ export const refreshToken = async (req:Request,res:Response)=>{
             {
                 userId:user.id,
                 name:user.name,
-                role:user.role
+                role:user.role,
+                email:user.email,
+                token_version:user.token_version
             },
             String(process.env.ACCESS_SECRET),
-            {expiresIn:"25s"}
+            {expiresIn:"10m"}
         )
-        res.cookie("accesstoken",newAccessToken);
+        res.cookie("accesstoken",newAccessToken,{
+             httpOnly:true,
+            sameSite:"lax",
+            secure:false,
+        });
         res.json({
             message: "Access token refreshed successfully"
         })  
@@ -290,7 +308,9 @@ export const passwordChange =async (req:Request,res:Response)=>{
     const hashedNewPassword=await bcrypt.hash(changePassword,15);
 
     const updatePassword=await pool.query("UPDATE users SET password=$1 WHERE email=$2 RETURNING id,user_name,email",[hashedNewPassword,email]);
-    return res.status(200).json({
+    res.clearCookie("refreshtoken");
+    res.clearCookie("accesstoken");
+     res.status(200).json({
         message:"Password Changed Successfully",
         user:updatePassword.rows
     })
@@ -304,13 +324,13 @@ export const passwordChange =async (req:Request,res:Response)=>{
 
 export const logout= async (req:Request,res:Response)=>{
     res.clearCookie("refreshtoken");
-    res.clearCookie("accesstoken")
+    res.clearCookie("accesstoken");
     res.status(200).json({message:"Logged out successfully"})
 }
 
 export const getAllUsers = async(req:Request,res:Response)=>{
     try{
-        const result =await pool.query("SELECT * FROM users");
+        const result =await pool.query("SELECT id,user_name,email,role FROM users");
     res.status(200).json(result.rows);
     }catch(err){
         res.status(500).json({error:"Internal Server Error"})
@@ -363,4 +383,30 @@ export const deleteUser = async(req:Request,res:Response)=>{
             error:"Internal Server Error"
         })
     }
+}
+
+
+export const logoutFromAll = async (req:Request, res:Response)=>{
+    try{
+        const userId=req.user?.userId
+        await pool.query("UPDATE users SET token_version=token_version+1 WHERE id=$1",[userId]);
+
+        res.clearCookie("accesstoken");
+        res.clearCookie("refreshtoken")
+
+        return res.status(200).json({
+            message:"Successfully Logout from all devices"
+        })
+
+    }catch(err){
+    
+        return res.status(500).json({
+            error:"Internal Server Error"
+        })
+    }
+
+}
+
+export const uploadMedia=async(req:Request, res:Response)=>{
+    
 }

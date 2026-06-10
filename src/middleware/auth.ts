@@ -8,7 +8,6 @@ export const authSudoAdmin =(req:Request,res:Response,next:NextFunction)=>{
         error:"Only accessable by SudoAdmins"
     })
  }
- return   
 
  next();
 }
