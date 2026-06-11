@@ -4,7 +4,6 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
-import e from "express";
 
 
 const transporter=nodemailer.createTransport({
@@ -99,16 +98,36 @@ export const login = async (req:Request ,res:Response )=>{
    
 };
 
-export const getUser = async (req:Request,res:Response)=>{
-    try{
-        const userId=req.user?.userId;
-        const result= await pool.query("SELECT id,user_name,email,role FROM users WHERE id=$1",[userId]);
+export const getUser = async (req: Request, res: Response) => {
+    try {
+        const userId = req.user?.userId;
+
+        const result = await pool.query(
+            `SELECT 
+                users.id,
+                users.user_name,
+                users.email,
+                users.role,
+                json_agg(
+                    json_build_object(
+                            'id',media.media_id,
+                        'filename', media.filename,
+                        'file_url', media.file_url
+                    )
+                ) FILTER (WHERE media.media_id IS NOT NULL) AS media
+            FROM users
+            LEFT JOIN media ON users.id = media.user_id
+            WHERE users.id = $1
+            GROUP BY users.id`,
+            [userId]
+        );
 
         res.status(200).json({
             message: "User fetched successfully",
             user: result.rows[0]
         });
-    }catch(err){
+
+    } catch (err) {
         console.error("Error fetching profile", err);
         res.status(500).json({ error: "Internal Server Error" });
     }
@@ -405,8 +424,4 @@ export const logoutFromAll = async (req:Request, res:Response)=>{
         })
     }
 
-}
-
-export const uploadMedia=async(req:Request, res:Response)=>{
-    
 }
