@@ -1,9 +1,25 @@
 import type { Request, Response } from "express";
-import { pool } from "../config/db.js";
 import bcrypt from "bcryptjs";
+import prisma from "../config/prisma.js";
+import fs from "fs"
+import path from "path";
 import jwt from "jsonwebtoken";
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
+import { z } from "zod";
+
+const registerSchema = z.object({
+  name: z.string().min(2, "Name is required"),
+  email: z.email("Invalid email address"),
+  password: z.string().min(6, "Password must be at least 6 characters"),
+  role: z.string().optional(),
+});
+
+const loginSchema = z.object({
+  email: z.email("Invalid email address"),
+  password: z.string().min(6, "Password must be at least 6 characters"),
+});
+
 
 
 const transporter=nodemailer.createTransport({
@@ -16,43 +32,27 @@ const transporter=nodemailer.createTransport({
     }
 })
 
-
 export const register = async (req:Request, res:Response)=>{
     try {
-        const {name,email,password,role} =req.body;
-        const findUser=await pool.query("SELECT * FROM users WHERE email=$1",[email]);
-        if(findUser.rows.length>0){
-            return res.status(400).json({ message: "User already exists" });
+        const parsed = registerSchema.safeParse(req.body);
+        if (!parsed.success) {
+            return res.status(400).json({ errors: parsed.error.issues });
+        }
+
+        const {name,email,password,role} = parsed.data;
+        const findUser=await prisma.users.findUnique({
+            where:{email}
+        })
+        if(findUser){
+            return res.status(409).json({ message: "User already exists" });
         }
 
         const hashPassword= await bcrypt.hash(password,10);
-        const result = await pool.query("INSERT INTO users (user_name, email,password,role) VALUES ($1, $2, $3,$4) RETURNING id,user_name,email", [name, email,hashPassword,role]);
-        res.status(201).json(
-            {message:"User Registered Successfully",
-                user:result.rows[0]
-            })
-    } catch (err) {
-        console.error("Error creating user", err);
-        res.status(500).json({ error: "Internal Server Error" });
-    }
-};
+        const user = await prisma.users.create({
+        data: { user_name: name, email, password: hashPassword, role:role ?? null },
+        select: { id: true, user_name: true, email: true, role: true, token_version: true }
+        });
 
-export const login = async (req:Request ,res:Response )=>{
-    try{
-        const {email,password}=req.body;
-        const findUser= await pool.query("SELECT * FROM users WHERE email=$1",[email]);
-        if (findUser.rows.length === 0){
-             return res.status(401).json({
-              message: "Invalid email or password"
-           });
-        }
-        const user = findUser.rows[0];
-        const matchPassword= await bcrypt.compare(password,user.password)
-        if(!matchPassword){
-            return res.status(401).json({
-                error:"Invalid email or password"
-            })
-        }
 
         const accessToken=jwt.sign(
             {
@@ -75,7 +75,90 @@ export const login = async (req:Request ,res:Response )=>{
             {expiresIn:"1h"}
         )
      
-        await pool.query("UPDATE users SET refresh_token=$1 WHERE id=$2",[refreshToken,user.id]);
+        await prisma.users.update({
+            where:{id:user.id},
+            data: { refresh_token: refreshToken }
+        });
+
+        res.cookie("accesstoken",accessToken,{
+            httpOnly:true,
+            sameSite:"lax",
+            secure:false,
+        })
+        res.cookie("refreshtoken",refreshToken,{
+            httpOnly:true,
+            sameSite:"lax",
+            secure:false,
+        })
+
+        res.status(201).json(
+            {message:"User Registered Successfully",
+            user:{ id: user.id, email: user.email, role: user.role, user_name: user.user_name },
+            })
+    } catch (err) {
+        console.error("Error creating user", err);
+        res.status(500).json({ error: "Internal Server Error" });
+    }
+};
+
+export const login = async (req:Request ,res:Response )=>{
+    try{
+        const parsed = loginSchema.safeParse(req.body);
+        if (!parsed.success) {
+            return res.status(400).json({ errors: parsed.error.issues  });
+        }
+
+        const {email,password}=parsed.data;
+        const findUser= await prisma.users.findUnique({
+            where: {email},
+            select: {
+        id: true,
+        user_name: true,
+        email: true,
+        role: true,
+        password: true,
+        token_version: true,
+        media: {
+            select: { media_id: true, filename: true, file_url: true }
+        }
+        }});
+        if (!findUser){
+             return res.status(409).json({
+              message: "Invalid email or password"
+           });
+        }
+        const matchPassword= await bcrypt.compare(password,findUser.password ?? "")
+        if(!matchPassword){
+            return res.status(409).json({
+                message:"Invalid email or password"
+            })
+        }
+
+        const accessToken=jwt.sign(
+            {
+                userId:findUser.id,
+                user_name:findUser.user_name,
+                email:findUser.email,
+                role:findUser.role,
+                token_version:findUser.token_version
+            },
+            String(process.env.ACCESS_SECRET),
+            {expiresIn:"5m"}
+        )
+        const refreshToken=jwt.sign(
+            {
+                userId:findUser.id,
+                role:findUser.role,
+                token_version:findUser.token_version
+            },
+           String(process.env.REFRESH_SECRET),
+            {expiresIn:"1h"}
+        )
+     
+        await prisma.users.update({
+            where:{id:findUser.id},
+            data:{refresh_token: refreshToken}
+        });
 
         res.cookie("accesstoken",accessToken,{
             httpOnly:true,
@@ -89,11 +172,11 @@ export const login = async (req:Request ,res:Response )=>{
         })
           res.json({
           message: "Login successful",
-          user: { id: user.id, email: user.email, role:user.role,user_name:user.user_name },
+          user: { id: findUser.id, email: findUser.email, role:findUser.role,user_name:findUser.user_name,media: findUser.media  },
            });
     }catch(err){
         console.error("Error Login Users users", err);
-        res.status(500).json({ error: "Internal Server Error" });
+        res.status(500).json({ message: "Internal Server Error" });
     }
    
 };
@@ -101,30 +184,34 @@ export const login = async (req:Request ,res:Response )=>{
 export const getUser = async (req: Request, res: Response) => {
     try {
         const userId = req.user?.userId;
+        const id=Number(userId)
 
-        const result = await pool.query(
-            `SELECT 
-                users.id,
-                users.user_name,
-                users.email,
-                users.role,
-                json_agg(
-                    json_build_object(
-                            'id',media.media_id,
-                        'filename', media.filename,
-                        'file_url', media.file_url
-                    )
-                ) FILTER (WHERE media.media_id IS NOT NULL) AS media
-            FROM users
-            LEFT JOIN media ON users.id = media.user_id
-            WHERE users.id = $1
-            GROUP BY users.id`,
-            [userId]
-        );
+        const user = await prisma.users.findUnique({
+            where:{id:id},
+            select:{
+                id:true,
+                user_name:true,
+                email:true,
+                role:true,
+                media:{
+                    select:{
+                        media_id:true,
+                        filename:true,
+                        file_url:true
+                    }
+                }
+            }
+        })
+
+        if(!user){
+            res.status(404).json({
+                message:"User Not Found"
+            })
+        }
 
         res.status(200).json({
             message: "User fetched successfully",
-            user: result.rows[0]
+            user:user
         });
 
     } catch (err) {
@@ -137,21 +224,22 @@ export const refreshToken = async (req:Request,res:Response)=>{
     try{
         const refreshToken=req.cookies.refreshtoken;
         if(!refreshToken){
-            return res.status(401).json({
+            return res.status(404).json({
                 message: "No refresh token found"
             })
         }
         const decoded:any=jwt.verify(refreshToken,String(process.env.REFRESH_SECRET)) ;
         const userId=decoded.userId;
 
-        const findUser= await pool.query("SELECT * FROM users WHERE id=$1",[userId]);
-        if(findUser.rows.length===0){
+        const findUser= await prisma.users.findUnique({
+            where:{id:userId}
+        })
+        if(!findUser){
             return res.status(401).json({
                 message: "Invalid refresh token"
             })
         }
-        const user=findUser.rows[0];
-        if(user.refresh_token !== refreshToken){
+        if(findUser.refresh_token !== refreshToken){
             return res.status(401).json({
                 message: "Invalid refresh token"
             })
@@ -159,11 +247,11 @@ export const refreshToken = async (req:Request,res:Response)=>{
 
         const newAccessToken=jwt.sign(
             {
-                userId:user.id,
-                name:user.name,
-                role:user.role,
-                email:user.email,
-                token_version:user.token_version
+                userId:findUser.id,
+                name:findUser.user_name,
+                role:findUser.role,
+                email:findUser.email,
+                token_version:findUser.token_version
             },
             String(process.env.ACCESS_SECRET),
             {expiresIn:"10m"}
@@ -173,7 +261,7 @@ export const refreshToken = async (req:Request,res:Response)=>{
             sameSite:"lax",
             secure:false,
         });
-        res.json({
+        res.status(200).json({
             message: "Access token refreshed successfully"
         })  
     }catch(err){
@@ -185,9 +273,11 @@ export const refreshToken = async (req:Request,res:Response)=>{
 
 export const forgetPassword =async (req:Request,res:Response)=>{
     try{
-        const {email}=req.body;
-        const findEmail= await pool.query("SELECT * FROM users WHERE email=$1",[email]);
-        if(findEmail.rows.length===0){
+       const { email } = req.body;
+        const findEmail= await prisma.users.findUnique({
+            where:{email}
+        })
+        if(!findEmail){
             return res.status(404).json({
                 message: "Email not found"
             })
@@ -195,8 +285,13 @@ export const forgetPassword =async (req:Request,res:Response)=>{
 
         const otp=Math.floor(100000 + Math.random() * 900000).toString();
         const expiresAt= new Date(Date.now() + 2* 60* 1000);
-
-        await pool.query("INSERT INTO otp_table (email, otp, expires_at) VALUES ($1, $2, $3)",[email,otp,expiresAt]);
+        await prisma.otp_table.create({
+            data:{
+                email:email,
+                otp:otp,
+                expires_at:expiresAt
+            }
+        })
 
         try{
             const mailInfo= await transporter.sendMail({
@@ -225,18 +320,20 @@ export const forgetPassword =async (req:Request,res:Response)=>{
 export const verifyOtp = async (req:Request,res:Response)=>{
     try{
         const {otp,email}=req.body;
-        const findOtp= await pool.query("SELECT * FROM otp_table WHERE otp=$1 AND email=$2",[otp,email]);
-        if(findOtp.rows.length===0){
-            return res.status(404).json({
+        const findOtp=await prisma.otp_table.findFirst({
+            where:{email:email,otp:otp},
+        })
+        if(!findOtp){
+            return res.status(400).json({
                 message: "Invalid OTP"
             })
         }
-        const otpData=findOtp.rows[0];
-        if(new Date() > new Date(otpData.expires_at)){
+        if(!findOtp.expires_at || new Date() > new Date(findOtp.expires_at)){
             return res.status(400).json({
                 message: "OTP expired"
             })
         }
+    
         res.status(200).json({
             message: "OTP verified successfully"
         })
@@ -250,16 +347,35 @@ export const resetPassword=async (req:Request,res:Response)=>{
     try{
         const {newPassword, email}=req.body;
         const hashedNewPassword=await bcrypt.hash(newPassword,15);
-        const changePassword=await pool.query("UPDATE users SET password=$1 WHERE email=$2 RETURNING id,user_name,email",[hashedNewPassword,email])
+        const changePassword=await prisma.users.update({
+            where:{
+                email
+            },
+            data:{password:hashedNewPassword},
+            select:{
+                id:true,
+                user_name:true,
+                email:true
+            }
+        });
+        
+        if(!changePassword){
+            res.status(404).json({
+                message:"User Not Found"
+            })
+        }
         res.status(200).json({
-            message:"Password Updated Successfully",
-            user:changePassword.rows
+            message:"Password Reset Successful",
+            user:changePassword
+        })
+        await prisma.otp_table.deleteMany({
+            where:{email}
         })
         
 
     }catch(err){
         res.status(500).json({
-            error:"Internal Server Error"
+            message:"Internal Server Error"
         })
     }
 };
@@ -267,16 +383,20 @@ export const resetPassword=async (req:Request,res:Response)=>{
 export const resendOtp=async (req:Request,res:Response)=>{
     try{
    const {email}=req.body;
-    const checkOtp= await pool.query("SELECT * FROM otp_table WHERE email=$1",[email])
-    if(checkOtp.rows.length===0){
+   const checkOtp=await prisma.otp_table.findFirst({
+    where:{email}
+   })
+    if(!checkOtp){
         return res.status(404).json({
                 message: "Invalid email"
             })
     }
         const otp=Math.floor(100000 + Math.random() * 900000).toString();
         const expiresAt= new Date(Date.now() + 2* 60 *1000);
-        await pool.query("UPDATE otp_table SET otp=$1, expires_at=$2 WHERE email=$3",[otp,expiresAt,email]);
-         
+        await prisma.otp_table.updateMany({
+            where:{email},
+            data:{otp,expires_at:expiresAt}
+        })
            try{
             const mailInfo= await transporter.sendMail({
                 from: String(process.env.EMAIL_USER),
@@ -298,40 +418,44 @@ export const resendOtp=async (req:Request,res:Response)=>{
             message:"Internal server error"
         })
     }
- 
         }
 
 export const passwordChange =async (req:Request,res:Response)=>{
     try{
         const {email,password,changePassword}=req.body;
-    const checkUser=await pool.query("SELECT * FROM users WHERE email=$1",[email])
-    if (checkUser.rows.length===0){
+        const checkUser=await prisma.users.findUnique({
+            where:{email},
+        })
+    
+    if (!checkUser){
         return res.status(404).json({
-            error:"Invalid Email or password "
+            message:"Invalid Email or password "
         })
     }
-    const userData=checkUser.rows[0];
-   const matchPassword= await bcrypt.compare(password,userData.password)
+   const matchPassword= await bcrypt.compare(password,checkUser.password ?? "")
         if(!matchPassword){
            return res.status(400).json({
-            error:"Invalid email or password"
+            message:"Invalid email or password"
            })
         }
-    const matchNewPassword=await bcrypt.compare(changePassword,userData.password)
+    const matchNewPassword=await bcrypt.compare(changePassword,checkUser.password ?? "")
     if(matchNewPassword){
         return res.status(400).json({
-            error:"New password and Old password are same "
+            message:"New password and Old password are same "
         })
     }
 
     const hashedNewPassword=await bcrypt.hash(changePassword,15);
-
-    const updatePassword=await pool.query("UPDATE users SET password=$1 WHERE email=$2 RETURNING id,user_name,email",[hashedNewPassword,email]);
+    const updatePassword=await prisma.users.update({
+        where:{email},
+        data:{password:hashedNewPassword},
+        select:{id:true,user_name:true,email:true}
+    })
     res.clearCookie("refreshtoken");
     res.clearCookie("accesstoken");
      res.status(200).json({
         message:"Password Changed Successfully",
-        user:updatePassword.rows
+        user:updatePassword
     })
     }catch (err){
         res.status(500).json({
@@ -349,8 +473,8 @@ export const logout= async (req:Request,res:Response)=>{
 
 export const getAllUsers = async(req:Request,res:Response)=>{
     try{
-        const result =await pool.query("SELECT id,user_name,email,role FROM users");
-    res.status(200).json(result.rows);
+        const result=await prisma.users.findMany();
+    res.status(200).json(result);
     }catch(err){
         res.status(500).json({error:"Internal Server Error"})
     }
@@ -360,28 +484,77 @@ export const getAllUsers = async(req:Request,res:Response)=>{
 export const deleteUser = async(req:Request,res:Response)=>{
     try{
         const { id }=req.params;
+        const user_id=Number(id)
         const requestedId=req.user?.userId;
         const requestedRole=req.user?.role;
 
-        if(requestedRole==="sudoadmin"){
-            await pool.query("DELETE FROM users WHERE id=$1 ",[id])
+      
+        try{
+              if(requestedRole==="sudoadmin"){
+            const fileFind=await prisma.media.findMany({
+                where:{user_id},
+            })
+              
+        
+
+           for (const file of fileFind) {
+                 const filePath = path.join("src/uploads", file.filename??"");
+
+                fs.unlink(filePath, (err) => {
+                 if (err) {
+                 console.log("File delete error:", err.message);
+                     } else {
+                    console.log("Deleted:", file.filename);
+                 }
+                  });
+                     }   
+                     await prisma.users.deleteMany({
+                        where:{id:user_id}
+                     })
             return res.status(200).json({
                 message:"User deleted successfully"
             })
         }
+
+        }catch{
+            res.status(401).json({
+                error:"Error Deleting User"
+            })
+        }
+
         if(requestedRole==="admin"){
-            const targetedUsers= await pool.query("SELECT * FROM users WHERE id=$1",[id]);
-            if(targetedUsers.rows.length===0){
+            const targetedUsers=await prisma.users.findFirst({
+                where:{id:user_id}
+            })
+            if(!targetedUsers){
                 return res.status(404).json({
                     error:"Invalid user id "
                 })
             }
-            if(targetedUsers.rows[0].role!=="user"){
+            if(targetedUsers.role!=="user"){
                 return res.status(403).json({
-                    error:"Admin can delete only regular users"
+                    message:"Admin can delete only regular users"
                 })
             }
-            await pool.query("DELETE FROM users WHERE id=$1",[id]);
+            const fileFind=await prisma.media.findMany({
+                where:{user_id}
+            })
+        
+
+           for (const file of fileFind) {
+                 const filePath = path.join("src/uploads", file.filename??"");
+
+                fs.unlink(filePath, (err) => {
+                 if (err) {
+                 console.log("File delete error:", err.message);
+                     } else {
+                    console.log("Deleted:", file.filename);
+                 }
+                  });
+                     }   
+            await prisma.users.delete({
+                where:{id:user_id}
+            })
             return res.status(200).json({
                 message:"User deleted Successfully"
             })
@@ -392,7 +565,26 @@ export const deleteUser = async(req:Request,res:Response)=>{
                 error:"Users can delete their own account"
             })
         }
-        await pool.query("DELETE FROM users WHERE id=$1",[id]);
+        const fileFind=await prisma.media.findMany({
+            where:{user_id}
+        })
+          
+           for (const file of fileFind) {
+                 const filePath = path.join("src/uploads", file.filename ?? "");
+
+                fs.unlink(filePath, (err) => {
+                 if (err) {
+                 console.log("File delete error:", err.message);
+                     } else {
+                    console.log("Deleted:", file.filename);
+                 }
+                  });
+                     }   
+                     await prisma.users.delete({
+                        where:{id:user_id}
+                     })
+        res.clearCookie("accesstoken"),
+        res.clearCookie("refreshtoken")
         return res.status(200).json({
             message:"Successfully deleted users."
         })
@@ -408,7 +600,13 @@ export const deleteUser = async(req:Request,res:Response)=>{
 export const logoutFromAll = async (req:Request, res:Response)=>{
     try{
         const userId=req.user?.userId
-        await pool.query("UPDATE users SET token_version=token_version+1 WHERE id=$1",[userId]);
+        const id=Number(userId)
+        await prisma.users.update({
+            where:{id:id},
+            data:{token_version:{
+                increment:1
+            }}
+        })
 
         res.clearCookie("accesstoken");
         res.clearCookie("refreshtoken")

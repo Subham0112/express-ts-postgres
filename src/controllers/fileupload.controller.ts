@@ -1,5 +1,5 @@
 import type { Request, Response } from "express";
-import { pool } from "../config/db.js";
+import prisma from "../config/prisma.js";
 import fs from "fs"
 import path from "path";
 
@@ -11,13 +11,16 @@ export const uploadFile=async(req:Request,res:Response)=>{
     }
     const {filename}=req.file;
     const {userId}=req.body
+    const user_id=Number(userId)
 
     const fileUrl=`http://localhost:3000/uploads/${filename}`
     try{
-        const result=await pool.query("INSERT INTO media (user_id,filename,file_url) VALUES ($1,$2,$3) RETURNING *",[userId,filename,fileUrl])
+        const mediaCreate=await prisma.media.create({
+            data:{user_id:user_id,filename,file_url:fileUrl},
+        })
            res.status(200).json({
-            message:"Succesfully file uploaded",
-            file:result.rows[0]  
+            message:"File uploaded succesfully",
+            file:mediaCreate  
     })
     }catch(err){
         console.log(err)
@@ -29,21 +32,25 @@ export const uploadFile=async(req:Request,res:Response)=>{
 export const deleteFile=async (req:Request, res:Response)=>{
     const {id}=req.params
     try{
-        const findFile=await pool.query("SELECT * FROM media WHERE media_id=$1 ",[id])
-        if(findFile.rows.length===0){
+        const findFile=await prisma.media.findFirst({
+            where:{media_id:Number(id)}
+        })
+        if(!findFile){
             return res.status(404).json({
                 message:"File Not Found"
             })
         }
-        const {filename} =findFile.rows[0];
-        const deleteFile= await pool.query("DELETE FROM media WHERE media_id=$1",[id])
+        const {filename} =findFile;
+        await prisma.media.delete({
+            where:{media_id:Number(id)}
+        })
         
-        const filePath = path.join("src/uploads", filename)
+        const filePath = path.join("src/uploads", filename ?? "")
         fs.unlink(filePath, (err) => {
             if (err) console.error("Error deleting from Local:", err)
         })
         res.status(200).json({
-            message:"Deleted Media Successfully"
+            message:"File Deleted Successfully"
         })
     }catch(err){
         console.log('Error deleting file',err)

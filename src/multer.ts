@@ -7,7 +7,7 @@ const storage=multer.diskStorage({
         cb(null, ("src/uploads/"))
     },
     filename:(req,file,cb)=>{
-        const uniqueName=Date.now() + "-" + file.originalname;
+        const uniqueName=Date.now() + "-" + file.originalname.trim().replace(/\s+/g, "-");
         cb(null,uniqueName);
     }
 })

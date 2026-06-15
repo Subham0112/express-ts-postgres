@@ -9,14 +9,12 @@ import {register,login,getUser,refreshToken,forgetPassword,verifyOtp,resetPasswo
 import { uploadFile,deleteFile } from "./controllers/fileupload.controller.js";
 import path from "path";
 import { fileURLToPath } from "url";
-
-
-import { pool } from "./config/db.js";
 import {authSudoAdmin, authAdmin,authAdminOrSudoadmin} from './middleware/auth.js';
 import bcrypt from "bcryptjs";
 dotenv.config();
 
 const app:Express= express();
+ 
 
 app.use(express.json());
 app.use(cors({
@@ -32,11 +30,6 @@ const __dirname = path.dirname(__filename);
 
 app.use("/uploads", express.static(path.join(__dirname, "../src/uploads")))
 
-pool.connect().then(()=>{
-    console.log("successfully connected to db ")
-}).catch((err)=>{
-    console.log("Error connecting to database", err)
-})
 
 
 
