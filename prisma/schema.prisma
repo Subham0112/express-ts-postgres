@@ -10,9 +10,12 @@ datasource db {
 model media {
   media_id Int     @id @default(autoincrement())
   user_id  Int?
+  post_id   Int?  
   filename String? @db.VarChar(200)
   file_url String? @db.VarChar(200)
   users    users?  @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  posts     posts?  @relation(fields: [post_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  created_at DateTime? @default(now()) @db.Timestamp(6)
 }
 
 model otp_table {
@@ -29,7 +32,58 @@ model users {
   email         String? @unique(map: "users_email_unique") @db.VarChar(200)
   password      String? @db.VarChar(200)
   refresh_token String?
-  role          String?
+  role          String? @default("user")
+  profile_url String?
   token_version Int     @default(0)
+  posts         posts[] 
   media         media[]
+  likes likes[]
+  comments comments[]
+  sender       messages[] @relation("Sender")
+  reciever          messages[] @relation("Receiver")
+  
+}
+
+model posts {
+  id         Int       @id @default(autoincrement())
+  content    String?   @db.Text
+  visiblity  String?   @db.Text @default("all")
+  user_id    Int?
+  users      users?    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  media      media[]
+  likes likes[]
+  comments comments[]
+  created_at DateTime? @default(now()) @db.Timestamp(6)
+  updated_at DateTime? @updatedAt @db.Timestamp(6)
+}
+
+model likes {
+  user_id Int
+  users      users    @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  post_id Int
+  posts     posts  @relation(fields: [post_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  created_at DateTime? @default(now()) @db.Timestamp(6)
+
+  @@id([user_id, post_id])
+}
+
+model comments{
+  id Int  @id @default(autoincrement())
+  user_id Int
+  users users? @relation(fields:[user_id], references:[id], onDelete:Cascade )
+  post_id Int
+  posts   posts?  @relation(fields: [post_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  comment String? @db.Text
+  created_at DateTime? @default(now()) @db.Timestamp(6)
+}
+
+model messages{
+  id Int @id @default(autoincrement())
+  sender_id Int 
+  sender users? @relation("Sender",fields:[sender_id],references:[id], onDelete:Cascade)
+  receiver_id Int 
+  receiver users? @relation ("Receiver",fields:[receiver_id],references:[id])
+  messages String? @db.Text
+  is_read Boolean   @default(false)
+  created_at DateTime? @default(now()) @db.Timestamp(6)
 }

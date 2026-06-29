@@ -1,3 +1,4 @@
+
 import type { Request, Response } from "express";
 import bcrypt from "bcryptjs";
 import prisma from "../config/prisma.js";
@@ -63,7 +64,7 @@ export const register = async (req:Request, res:Response)=>{
                 token_version:user.token_version
             },
             String(process.env.ACCESS_SECRET),
-            {expiresIn:"5m"}
+            {expiresIn:"15m"}
         )
         const refreshToken=jwt.sign(
             {
@@ -72,7 +73,7 @@ export const register = async (req:Request, res:Response)=>{
                 token_version:user.token_version
             },
            String(process.env.REFRESH_SECRET),
-            {expiresIn:"1h"}
+            {expiresIn:"5h"}
         )
      
         await prisma.users.update({
@@ -118,9 +119,7 @@ export const login = async (req:Request ,res:Response )=>{
         role: true,
         password: true,
         token_version: true,
-        media: {
-            select: { media_id: true, filename: true, file_url: true }
-        }
+        profile_url:true
         }});
         if (!findUser){
              return res.status(409).json({
@@ -143,7 +142,7 @@ export const login = async (req:Request ,res:Response )=>{
                 token_version:findUser.token_version
             },
             String(process.env.ACCESS_SECRET),
-            {expiresIn:"5m"}
+            {expiresIn:"15m"}
         )
         const refreshToken=jwt.sign(
             {
@@ -152,7 +151,7 @@ export const login = async (req:Request ,res:Response )=>{
                 token_version:findUser.token_version
             },
            String(process.env.REFRESH_SECRET),
-            {expiresIn:"1h"}
+            {expiresIn:"5h"}
         )
      
         await prisma.users.update({
@@ -172,7 +171,7 @@ export const login = async (req:Request ,res:Response )=>{
         })
           res.json({
           message: "Login successful",
-          user: { id: findUser.id, email: findUser.email, role:findUser.role,user_name:findUser.user_name,media: findUser.media  },
+          user: { id: findUser.id, email: findUser.email, role:findUser.role,user_name:findUser.user_name },
            });
     }catch(err){
         console.error("Error Login Users users", err);
@@ -181,44 +180,95 @@ export const login = async (req:Request ,res:Response )=>{
    
 };
 
-export const getUser = async (req: Request, res: Response) => {
-    try {
-        const userId = req.user?.userId;
-        const id=Number(userId)
 
-        const user = await prisma.users.findUnique({
-            where:{id:id},
-            select:{
+
+export const uploadProfile = async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      return res.status(401).json({ message: "Unauthorised" });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ message: "No file uploaded" });
+    }
+
+    const filename = req.file.filename;
+    const profile_url = `${process.env.FILE_URL}/uploads/${filename}`;
+
+    await prisma.users.update({
+      where: { id: Number(userId) },
+      data: { profile_url },
+    });
+
+    return res.status(200).json({
+      message: "Profile picture updated successfully",
+      profile_url,
+    });
+  } catch (err) {
+    console.error("Error uploading profile", err);
+    return res.status(500).json({ message: "Internal Server Error" });
+  }
+};
+
+
+export const getUser = async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.userId;
+    const id = Number(userId);
+
+    const user = await prisma.users.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        user_name: true,
+        email: true,
+        role: true,
+        profile_url: true
+      },
+    });
+
+    if (!user) {
+      return res.status(404).json({ message: "User Not Found" });
+    }
+
+    res.status(200).json({ message: "User fetched successfully", user });
+  } catch (err) {
+    console.error("Error fetching profile", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+export const getUserById=async (req:Request,res:Response)=>{
+        const {userId} =req.params
+        try{
+             const user=await prisma.users.findFirst({
+            where:{id:Number(userId)},
+             select:{
                 id:true,
                 user_name:true,
                 email:true,
                 role:true,
-                media:{
-                    select:{
-                        media_id:true,
-                        filename:true,
-                        file_url:true
-                    }
-                }
+                profile_url:true
             }
         })
-
         if(!user){
-            res.status(404).json({
+            return res.status(404).json({
                 message:"User Not Found"
             })
         }
-
         res.status(200).json({
-            message: "User fetched successfully",
             user:user
-        });
+        })
 
-    } catch (err) {
-        console.error("Error fetching profile", err);
-        res.status(500).json({ error: "Internal Server Error" });
-    }
-};
+
+        }catch(err){
+            res.status(500).json({
+                message:"Internal Server Error"
+            })
+        }
+       
+}
 
 export const refreshToken = async (req:Request,res:Response)=>{
     try{
@@ -254,7 +304,7 @@ export const refreshToken = async (req:Request,res:Response)=>{
                 token_version:findUser.token_version
             },
             String(process.env.ACCESS_SECRET),
-            {expiresIn:"10m"}
+            {expiresIn:"15m"}
         )
         res.cookie("accesstoken",newAccessToken,{
              httpOnly:true,
@@ -423,6 +473,7 @@ export const resendOtp=async (req:Request,res:Response)=>{
 export const passwordChange =async (req:Request,res:Response)=>{
     try{
         const {email,password,changePassword}=req.body;
+        console.log("email is:",email)
         const checkUser=await prisma.users.findUnique({
             where:{email},
         })
@@ -605,11 +656,12 @@ export const logoutFromAll = async (req:Request, res:Response)=>{
             where:{id:id},
             data:{token_version:{
                 increment:1
-            }}
+            },refresh_token:""}
         })
 
         res.clearCookie("accesstoken");
         res.clearCookie("refreshtoken")
+       
 
         return res.status(200).json({
             message:"Successfully Logout from all devices"

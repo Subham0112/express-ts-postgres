@@ -31,7 +31,9 @@
     // "noUnusedParameters": true,
     // "noFallthroughCasesInSwitch": true,
     // "noPropertyAccessFromIndexSignature": true,
-
+    
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
     // Recommended Options
     "strict": true,
     "resolveJsonModule": true,      

@@ -17,7 +17,7 @@ export const verifyToken = async (req: Request,res: Response,next: NextFunction)
     const decoded = jwt.verify(
   token,
   String(process.env.ACCESS_SECRET)
-) as { userId: string; role: string; email:string, token_version:number};
+) as { userId: string; role: string; email:string, token_version:number,profile_url:string};
     
 const findUser=await prisma.users.findFirst({
   where:{id:Number(decoded.userId)}

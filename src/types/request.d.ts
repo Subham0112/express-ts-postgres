@@ -5,6 +5,7 @@ declare namespace Express {
       role:string;
       email:string;
       token_version:number;
+      profile_url:string;
     };
   }
 }
